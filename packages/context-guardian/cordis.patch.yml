@@ -1,0 +1,13 @@
+# context-guardian bundle patch: inserts the context-guardian row.
+# Installs the context guardian plugin, which watches each session's token
+# pressure and applies value-aware pruning and region compaction through the
+# platform's own tokenMeter / toolResultPruner / compaction services — it
+# overrides no built-in service, so a plugin failure never affects DSH itself.
+#
+# Install locally:
+#   dsh plugin --profile web add link:<repo>/packages/context-guardian
+# From npm once published:
+#   dsh plugin --profile web add @dsh-my-plugin/context-guardian
+- insert:
+    - id: context-guardian
+      name: '@dsh-my-plugin/context-guardian'
