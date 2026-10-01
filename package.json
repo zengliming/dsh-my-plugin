@@ -1,0 +1,21 @@
+{
+  "name": "dsh-my-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "个人 DSH 插件仓库：集中管理自己定义的全部插件（pnpm monorepo）",
+  "type": "module",
+  "packageManager": "pnpm@10.4.1",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "watch": "pnpm -r --parallel --if-present run watch",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "clean": "pnpm -r --if-present run clean"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.2"
+  }
+}

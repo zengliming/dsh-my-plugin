@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+packages/*/lib/
+packages/*/dist/
+packages/*/out/
+*.tsbuildinfo
+
+# test & coverage
+packages/*/coverage/
+*.test.ts.snap
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# runtime scratch
+.dsh-browser/
