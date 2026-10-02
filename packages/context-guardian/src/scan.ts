@@ -11,7 +11,7 @@
  * @module @dsh-my-plugin/context-guardian/scan
  */
 
-import type { RangeEstimate, ScanResult, SurfaceNodeView } from './types.ts'
+import type { BalancedBefore, RangeEstimate, ScanResult, SurfaceNodeView } from './types.ts'
 
 /** 污染启发式：一段文本中重复行占比超过该比例视为噪音。 */
 const DUPLICATE_LINE_RATIO = 0.5
@@ -160,6 +160,45 @@ export function scanSurface(
     prunableSeqs: state.prunableSeqs,
     pollutionSeqs: state.pollutionSeqs,
   }
+}
+
+/**
+ * 官方风格的可压缩区间选择（对齐 compaction-basic 的 selectCompactableRange）：
+ * 从尾部累积 token 直到凑够 retainTokens 预算，其余前缀全部可压缩；再从前向后
+ * 回退到第一个工具配对平衡切点，保证压缩区间不劈开 tool-call/result 配对。
+ *
+ * 纯函数：平衡检查通过回调注入（运行时由 orchestrator 传入官方
+ * `toolPairingBalancedBefore(session, seq)`），测试可注入桩函数。
+ * @param nodes - 表面节点视图（head→tail 顺序，含 token）。
+ * @param retainTokens - 从尾部保留的最小 token 预算（逐字保留）。
+ * @param balancedBefore - 工具配对平衡检查：seq 之前的切点是否安全。
+ * @returns 建议压缩的区间（start=首个可压缩节点，end=保留尾的前一节点），或 undefined。
+ */
+export function selectCompactRangeByRetention(
+  nodes: readonly SurfaceNodeView[],
+  retainTokens: number,
+  balancedBefore: BalancedBefore,
+): RangeEstimate | undefined {
+  if (nodes.length === 0) return undefined
+  // 从尾部累积，找到保留尾的起点索引。
+  let keepFromIdx = nodes.length
+  let accumulated = 0
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    accumulated += nodes[index]!.tokens
+    keepFromIdx = index
+    if (accumulated >= retainTokens) break
+  }
+  // 没有足够的可压缩前缀（几乎全部都要保留）→ 无可压缩区间。
+  if (keepFromIdx <= 1) return undefined
+  // 回退到工具配对平衡切点：保证 keepFromIdx 之前的切点不劈开配对。
+  while (keepFromIdx > 1 && !balancedBefore(nodes[keepFromIdx]!.seq)) {
+    keepFromIdx -= 1
+  }
+  if (keepFromIdx <= 1) return undefined
+  const start = nodes[0]!.seq
+  const end = nodes[keepFromIdx - 1]!.seq
+  const savingsTokens = nodes.slice(0, keepFromIdx).reduce((sum, node) => sum + node.tokens, 0)
+  return { start, end, savingsTokens }
 }
 
 /**

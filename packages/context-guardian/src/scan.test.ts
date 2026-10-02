@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { scanSurface, pickBestRange, matchesProtectedKeyword, isNoisyText } from './scan.ts'
+import { scanSurface, pickBestRange, matchesProtectedKeyword, isNoisyText, selectCompactRangeByRetention } from './scan.ts'
 import type { SurfaceNodeView } from './types.ts'
 
 /** 构造一个工具结果节点视图的辅助函数。 */
@@ -141,5 +141,39 @@ describe('pickBestRange', () => {
       { start: 2, end: 3, savingsTokens: 30_000 },
     ]
     expect(pickBestRange(ranges, 10_000)).toEqual({ start: 2, end: 3, savingsTokens: 30_000 })
+  })
+})
+
+describe('selectCompactRangeByRetention', () => {
+  const nodes: SurfaceNodeView[] = [
+    { seq: 1, role: 'user', text: 'u1', tokens: 10 },
+    { seq: 2, role: 'assistant', text: 'a1', tokens: 100 },
+    { seq: 3, role: 'tool', text: 't1', tokens: 200 },
+    { seq: 4, role: 'assistant', text: 'a2', tokens: 100 },
+    { seq: 5, role: 'user', text: 'u2', tokens: 10 },
+  ]
+  const total = nodes.reduce((sum, n) => sum + n.tokens, 0)
+
+  it('keeps the tail up to retainTokens and compacts the prefix', () => {
+    // retainTokens=110：尾部累积 seq5(10)+seq4(100)=110 → 从 seq3 起压缩 [1..3]
+    const range = selectCompactRangeByRetention(nodes, 110, () => true)
+    expect(range).toEqual({ start: 1, end: 3, savingsTokens: 10 + 100 + 200 })
+  })
+
+  it('compacts everything except the exact retention budget', () => {
+    // retainTokens = total：尾部累积到全部 → keepFromIdx=0 → 无区间
+    expect(selectCompactRangeByRetention(nodes, total, () => true)).toBeUndefined()
+  })
+
+  it('backs off to a tool-pairing balanced cut', () => {
+    // retainTokens=110 → keepFromIdx=3（保留 seq4,5）；切点在 seq4 之前。
+    // balancedBefore(4)=false（劈开配对）→ 回退到 keepFromIdx=2；切点在 seq3 之前，
+    // balancedBefore(3)=true → 压缩 [1..2]。
+    const range = selectCompactRangeByRetention(nodes, 110, (seq) => seq !== 4)
+    expect(range).toEqual({ start: 1, end: 2, savingsTokens: 10 + 100 })
+  })
+
+  it('returns undefined for a single node', () => {
+    expect(selectCompactRangeByRetention([{ seq: 1, role: 'user', text: 'x', tokens: 10 }], 0, () => true)).toBeUndefined()
   })
 })

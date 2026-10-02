@@ -51,3 +51,6 @@ export interface RangeEstimate {
 
 /** 投影函数：把一个 Session 表面节点转为视图（执行层实现，纯函数层不引用）。 */
 export type NodeProjector = (seq: number) => SurfaceNodeView | undefined
+
+/** 工具配对平衡检查：seq 之前的切点是否不劈开 tool-call/result 配对（由调用方注入官方实现）。 */
+export type BalancedBefore = (seq: number) => boolean

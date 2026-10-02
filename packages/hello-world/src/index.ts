@@ -12,7 +12,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import z from 'schemastery'
+import z from '@deepseek-ai/schemastery'
 
 /** 插件在 cordis.patch.yml 中的行 id（bundle 层由 loader 注入，此处仅文档说明）。 */
 export const name = 'hello-world'

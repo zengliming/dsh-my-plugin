@@ -5,8 +5,10 @@
  * 避免上下文过长或被污染。协作者模式：只调用平台的 tokenMeter / compaction
  * 服务与 Session 表面替换协议，不覆盖任何内置服务，插件异常绝不影响 DSH 本体。
  *
- * 工作方式：监听 `session/event`，对每个活跃 agent 的会话做去抖巡检；
- * 巡检按压力分级执行 污染清理 → 价值剪枝 → 低价值区间压缩。
+ * 三层时机（对齐官方 compaction-basic）：
+ *  - `agent/pre-step`：模型请求前做零成本剪枝/污染清理（提前干预，不阻塞管线）；
+ *  - `agent/request-error`：context-overflow 失败时强制剪枝+压缩并请求重试；
+ *  - `session/event` 去抖巡检：压力高的会话做完整 清理→剪枝→压缩 分级处置。
  *
  * 异常隔离：所有事件监听、异步巡检、平台调用都在各自 try/catch 内，失败只
  * 记日志；所有监听器经 ctx.effect 注册，插件卸载零残留。
@@ -15,12 +17,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { Session } from '@deepseek-ai/dsh-session'
-import z from '@deepseek-ai/schemastery'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import { toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
 import { Config, resolveConfig, pressureLevel } from './config.ts'
 import type { ResolvedConfig } from './config.ts'
-import type { SurfaceNodeView } from './types.ts'
-import { inspectAgent } from './orchestrator.ts'
+import { inspectAgent, interveneBeforeStep, recoverFromOverflow } from './orchestrator.ts'
 import type { Platform } from './orchestrator.ts'
 import { projectSurface } from './project.ts'
 
@@ -32,8 +34,9 @@ export const inject = ['agents', 'tokenMeter', 'compaction']
 export { Config }
 export type { Config as ConfigType } from './config.ts'
 export { resolveConfig, pressureLevel } from './config.ts'
-export { scanSurface, pickBestRange, matchesProtectedKeyword, isNoisyText } from './scan.ts'
+export { scanSurface, pickBestRange, selectCompactRangeByRetention, matchesProtectedKeyword, isNoisyText } from './scan.ts'
 export { trimText, extractText, PRUNE_MARKER, POLLUTION_MARKER } from './execute.ts'
+export { inspectAgent, interveneBeforeStep, recoverFromOverflow } from './orchestrator.ts'
 
 /** 每个会话的去抖状态：上一次巡检时间与是否正在巡检。 */
 interface SessionGuardState {
@@ -42,7 +45,7 @@ interface SessionGuardState {
 }
 
 /**
- * 插件应用函数：挂载 session/event 监听，按会话去抖调度巡检。
+ * 插件应用函数：挂载三个时机的监听（pre-step / request-error / session/event）。
  * apply 内所有注册逻辑包 try/catch：注册失败仅记日志，插件加载失败不影响 DSH。
  * @param ctx - 注册上下文。
  * @param config - 部署配置（schema 已补默认值）。
@@ -58,7 +61,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   try {
-    // 平台能力闭包：测量 / 投影 / 定点压缩。
+    // 平台能力闭包：测量 / 投影 / 影子价格 / 配对平衡 / 定点压缩。
     const platform: Platform = {
       measure(session) {
         const measurement = ctx.tokenMeter.measure(session)
@@ -68,14 +71,46 @@ export function apply(ctx: Context, config: Config = {}): void {
         const measurement = ctx.tokenMeter.measure(session)
         return projectSurface(session, measurement)
       },
+      estimateMessage(message) {
+        return ctx.tokenMeter.estimateMessage(message as never)
+      },
+      balancedBefore(session, seq) {
+        return toolPairingBalancedBefore(session, seq as never)
+      },
       compactRegion(start, end, agentCtx, signal) {
-        return ctx.compaction.compactRegion(start, end, agentCtx, signal)
+        return ctx.compaction.compactRegion(start as never, end as never, agentCtx, signal)
       },
       log: logger,
     }
 
-    ctx.on('session/event', (session: Session, event) => {
-      // 只关心表面消息事件（消息追加/替换），边界与计量事件不触发巡检。
+    // 时机 1：模型请求前，零成本提前干预（剪枝/污染清理），不阻塞管线。
+    ctx.on('agent/pre-step', async (payload: { agent: Agent; signal: AbortSignal }, next) => {
+      try {
+        await interveneBeforeStep(payload.agent, platform, resolved, payload.signal)
+      } catch (error) {
+        logger.debug('pre-step intervention failed: %s', messageOf(error))
+      }
+      return next()
+    })
+
+    // 时机 2：context-overflow 失败恢复——强制剪枝+压缩，请求重试一次。
+    ctx.on('agent/request-error', async (payload: {
+      agent: Agent
+      failure: { code: string }
+      signal: AbortSignal
+    }, next) => {
+      if (payload.failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || payload.signal.aborted) return next()
+      try {
+        const recovered = await recoverFromOverflow(payload.agent, platform, resolved, payload.signal)
+        if (recovered && !payload.signal.aborted) return { kind: 'retry' }
+      } catch (error) {
+        logger.warn('overflow recovery failed: %s', messageOf(error))
+      }
+      return next()
+    })
+
+    // 时机 3：事件后去抖巡检（完整分级处置）。
+    ctx.on('session/event', (session: Session, event: SessionEvent) => {
       switch (event.type) {
         case 'user/message':
         case 'assistant/message':
@@ -87,7 +122,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       scheduleInspect(ctx, resolved, platform, guards, session, logger)
     })
   } catch (error) {
-    logger.error('context-guardian failed to register: %s', error instanceof Error ? error.message : String(error))
+    logger.error('context-guardian failed to register: %s', messageOf(error))
   }
 }
 
@@ -118,7 +153,7 @@ function scheduleInspect(
         const signal = new AbortController().signal
         await inspectAgent(agent, platform, resolved, signal)
       } catch (error) {
-        logger.warn('inspect failed for %s: %s', id, error instanceof Error ? error.message : String(error))
+        logger.warn('inspect failed for %s: %s', id, messageOf(error))
       } finally {
         const current = guards.get(id)
         if (current !== undefined) guards.set(id, { ...current, inFlight: false })
@@ -126,6 +161,15 @@ function scheduleInspect(
     })()
   } catch (error) {
     // 调度本身失败（如 Map 写入异常）：记录后跳过本次，不向上抛。
-    logger.warn('schedule failed: %s', error instanceof Error ? error.message : String(error))
+    logger.warn('schedule failed: %s', messageOf(error))
+  }
+}
+
+/** 错误到可读字符串的容错转换。 */
+function messageOf(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error)
+  } catch {
+    return 'unknown error'
   }
 }

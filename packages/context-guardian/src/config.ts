@@ -27,6 +27,12 @@ export interface Config {
   toolResultCharLimit?: number
   /** 最近 N 条消息永不压缩、永不剪枝（保留近期上下文）。默认 8。 */
   protectRecentMessages?: number
+  /**
+   * 压缩时从会话尾部保留的最小 token 预算（逐字保留，不进摘要）。默认 30000。
+   * 与 protectRecentMessages 互补：条数保护近期语义，token 预算保护精确预留；
+   * 官方 compaction-basic 采用同类 retainTokens 预算策略。
+   */
+  retainTokens?: number
   /** 命中任一关键词的消息永不压缩（正则按字面量匹配）。默认 []。 */
   protectKeywords?: string[]
   /** 是否对工具结果做价值剪枝。默认 true。 */
@@ -48,6 +54,7 @@ export const Config: z<Config> = z.object({
   criticalTokens: z.number().min(0).default(240_000),
   toolResultCharLimit: z.number().min(0).default(4_000),
   protectRecentMessages: z.number().min(0).default(8),
+  retainTokens: z.number().min(0).default(30_000),
   protectKeywords: z.array(z.string()).default([]),
   pruneToolResults: z.boolean().default(true),
   pollutionCleanup: z.boolean().default(true),
@@ -64,6 +71,7 @@ export interface ResolvedConfig {
   readonly criticalTokens: number
   readonly toolResultCharLimit: number
   readonly protectRecentMessages: number
+  readonly retainTokens: number
   readonly protectKeywords: readonly string[]
   readonly pruneToolResults: boolean
   readonly pollutionCleanup: boolean
@@ -81,6 +89,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     criticalTokens: config.criticalTokens ?? 240_000,
     toolResultCharLimit: config.toolResultCharLimit ?? 4_000,
     protectRecentMessages: config.protectRecentMessages ?? 8,
+    retainTokens: config.retainTokens ?? 30_000,
     protectKeywords: config.protectKeywords ?? [],
     pruneToolResults: config.pruneToolResults ?? true,
     pollutionCleanup: config.pollutionCleanup ?? true,
