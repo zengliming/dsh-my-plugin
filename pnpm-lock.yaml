@@ -17,6 +17,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.4
         version: 3.18.4
+      '@dsh-my-plugin/observability':
+        specifier: workspace:^
+        version: link:../observability
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -60,6 +63,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.4
         version: 3.18.4
+      '@dsh-my-plugin/observability':
+        specifier: workspace:^
+        version: link:../observability
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -76,6 +82,24 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: ^0.1.0-rc.8
         version: 0.1.0-rc.8(9c3132f05124dcad560259a05791d22c)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.4
+      tsdown:
+        specifier: 0.22.2
+        version: 0.22.2(typescript@5.7.3)
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.4)
+
+  packages/observability:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.4
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.4

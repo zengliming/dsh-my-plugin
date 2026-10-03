@@ -28,12 +28,17 @@ function fakeAgent(sessionId: string) {
 
 /** 构造最小 Platform 桩。 */
 function fakePlatform(overrides: Partial<Platform> = {}): Platform {
+  const observed: Record<string, unknown>[] = []
   return {
     measure: () => ({ totalTokens: 0, surfaceTokens: 0 }),
     project: () => [],
     estimateMessage: () => 0,
     balancedBefore: () => true,
     compactRegion: vi.fn(async () => undefined),
+    observe: vi.fn((input) => {
+      observed.push(input as Record<string, unknown>)
+      return true
+    }),
     log: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -87,6 +92,8 @@ describe('inspectAgent', () => {
     expect(replaceEvent).toBeDefined()
     // 替换消息保留 tool 角色（配对语义）。
     expect((replaceEvent!.data as { message: { role: string } }).message.role).toBe('tool')
+    // 埋点：剪枝动作被观测记录。
+    expect(platform.observe).toHaveBeenCalledWith(expect.objectContaining({ kind: 'prune', ok: true, tokensSaved: 1500 }))
   })
 
   it('compacts a low-value range at compact level', async () => {

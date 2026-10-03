@@ -20,6 +20,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import { toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { createObservability } from '@dsh-my-plugin/observability'
 import { Config, resolveConfig, pressureLevel } from './config.ts'
 import type { ResolvedConfig } from './config.ts'
 import { inspectAgent, interveneBeforeStep, recoverFromOverflow } from './orchestrator.ts'
@@ -28,8 +30,8 @@ import { projectSurface } from './project.ts'
 
 export const name = 'context-guardian'
 
-/** apply 阶段需要注入的服务：agents 遍历活跃 agent；tokenMeter 测压；compaction 定点压缩。 */
-export const inject = ['agents', 'tokenMeter', 'compaction']
+/** apply 阶段需要注入的服务：agents 遍历活跃 agent；tokenMeter 测压；compaction 定点压缩；tools 注册统计工具。 */
+export const inject = ['agents', 'tokenMeter', 'compaction', 'tools']
 
 export { Config }
 export type { Config as ConfigType } from './config.ts'
@@ -61,7 +63,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   try {
-    // 平台能力闭包：测量 / 投影 / 影子价格 / 配对平衡 / 定点压缩。
+    // 可观测性记录器：持久化到 $DSH_HOME/observability/events.json。
+    const obs = createObservability({ plugin: '@dsh-my-plugin/context-guardian' })
+
+    // 平台能力闭包：测量 / 投影 / 影子价格 / 配对平衡 / 定点压缩 / 观测。
     const platform: Platform = {
       measure(session) {
         const measurement = ctx.tokenMeter.measure(session)
@@ -80,8 +85,61 @@ export function apply(ctx: Context, config: Config = {}): void {
       compactRegion(start, end, agentCtx, signal) {
         return ctx.compaction.compactRegion(start as never, end as never, agentCtx, signal)
       },
+      observe(input) {
+        return obs.record(input)
+      },
       log: logger,
     }
+
+    // 观测工具：让模型能随时查询插件效果（剪枝/压缩/污染/溢出的节省量）。
+    try {
+      ctx.tools.register(defineTool({
+        name: 'guardian_stats',
+        description:
+          'Query how much context the context-guardian plugin has freed up: total actions, '
+          + 'tokens and characters saved by pruning, compaction, pollution cleanup, and overflow '
+          + 'recovery. Use to verify the plugin is working and to decide whether thresholds should '
+          + 'be tuned.',
+        parameters: {},
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              text: { type: 'string', required: true },
+            },
+          },
+          render: (_args, value) => [{ type: 'text', text: value.text }],
+        },
+        async execute() {
+          // 统计查询只读且精简，失败返回错误文本而非抛异常。
+          try {
+            const stats = obs.stats().find((s) => s.plugin === '@dsh-my-plugin/context-guardian')
+            if (stats === undefined) {
+              return { text: 'context-guardian: no effects recorded yet.' }
+            }
+            const t = stats.total
+            const kinds = Object.entries(stats.byKind)
+              .map(([kind, k]) => `${kind}: ${k.count} (ok ${k.success}, saved ${k.tokensSaved} tokens / ${k.charsSaved} chars)`)
+              .join('\n')
+            return {
+              text: `context-guardian effects\n`
+                + `total: ${t.count} actions (${t.success} ok / ${t.failure} fail)\n`
+                + `saved: ~${t.tokensSaved} tokens, ${t.charsSaved} chars\n`
+                + `---\n${kinds}`,
+            }
+          } catch (error) {
+            return { text: `guardian_stats failed: ${messageOf(error)}` }
+          }
+        },
+      }))
+    } catch (error) {
+      logger.warn('guardian_stats tool registration failed: %s', messageOf(error))
+    }
+
+    // 定期日志汇总：让效果在日志中可见（供后续优化参考）。标准定时器 + ctx.effect 回收。
+    const summarizeTimer = setInterval(() => obs.summarize(logger), 60_000)
+    ctx.effect(() => () => clearInterval(summarizeTimer))
 
     // 时机 1：模型请求前，零成本提前干预（剪枝/污染清理），不阻塞管线。
     ctx.on('agent/pre-step', async (payload: { agent: Agent; signal: AbortSignal }, next) => {

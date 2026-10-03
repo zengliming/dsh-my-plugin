@@ -11,6 +11,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CompactionAgentContext } from '@deepseek-ai/dsh-compaction'
 import type { Logger } from '@deepseek-ai/cordis'
+import type { ObsEvent } from '@dsh-my-plugin/observability'
 import { pressureLevel, shouldCompact, shouldPrune, shouldCleanPollution } from './config.ts'
 import type { ResolvedConfig } from './config.ts'
 import { scanSurface, pickBestRange, selectCompactRangeByRetention } from './scan.ts'
@@ -18,6 +19,9 @@ import type { SurfaceNodeView } from './types.ts'
 import { pruneNode, replacePollution } from './execute.ts'
 import { projectSurface } from './project.ts'
 import type { BalancedBefore } from './types.ts'
+
+/** 观测事件输入（插件已定，仅缺 ts/plugin 由记录器补全）。 */
+export type ObserveInput = Omit<ObsEvent, 'plugin' | 'ts'>
 
 /** 平台能力接口：调度器只依赖这些闭包，运行时由 index 注入。 */
 export interface Platform {
@@ -31,6 +35,8 @@ export interface Platform {
   balancedBefore(session: Session, seq: number): boolean
   /** 定点压缩一个表面区间（平台 compaction.compactRegion 的适配）。 */
   compactRegion(start: number, end: number, agent: CompactionAgentContext, signal: AbortSignal): Promise<unknown>
+  /** 记录一条观测事件（可观测性埋点，永不抛错）。 */
+  observe(input: ObserveInput): boolean
   /** 记录日志（带插件的 scope）。 */
   log: Logger
 }
@@ -106,9 +112,18 @@ export async function inspectAgent(
         if (replacePollution(session, node, node.tokens)) {
           pollution.push(seq)
           platform.log.info('pollution replaced seq=%d tokens=%d', seq, node.tokens)
+          platform.observe({
+            kind: 'pollution-cleanup',
+            ok: true,
+            sessionId: session.id,
+            tokensSaved: node.tokens,
+            count: 1,
+            detail: `seq=${seq}`,
+          })
         }
       } catch (error) {
         platform.log.warn('pollution replace failed seq=%d: %s', seq, messageOf(error))
+        platform.observe({ kind: 'pollution-cleanup', ok: false, sessionId: session.id, detail: `seq=${seq}` })
       }
     }
   }
@@ -123,9 +138,19 @@ export async function inspectAgent(
         if (pruneNode(session, node, config.toolResultCharLimit, node.tokens)) {
           pruned.push(seq)
           platform.log.info('pruned seq=%d tokens=%d', seq, node.tokens)
+          platform.observe({
+            kind: 'prune',
+            ok: true,
+            sessionId: session.id,
+            tokensSaved: node.tokens,
+            charsSaved: node.text.length - config.toolResultCharLimit,
+            count: 1,
+            detail: `seq=${seq}`,
+          })
         }
       } catch (error) {
         platform.log.warn('prune failed seq=%d: %s', seq, messageOf(error))
+        platform.observe({ kind: 'prune', ok: false, sessionId: session.id, detail: `seq=${seq}` })
       }
     }
   }
@@ -153,8 +178,24 @@ export async function inspectAgent(
           'compact region %d..%d savings=%d tokens=%d',
           best.start, best.end, best.savingsTokens, measurement.totalTokens,
         )
+        platform.observe({
+          kind: 'compact',
+          ok: true,
+          sessionId: session.id,
+          tokensSaved: best.savingsTokens,
+          count: 1,
+          pressureLevel: level,
+          detail: `region=${best.start}..${best.end}`,
+        })
       } catch (error) {
         platform.log.warn('compact region %d..%d failed: %s', best.start, best.end, messageOf(error))
+        platform.observe({
+          kind: 'compact',
+          ok: false,
+          sessionId: session.id,
+          pressureLevel: level,
+          detail: `region=${best.start}..${best.end}`,
+        })
       }
     }
   }
@@ -255,9 +296,13 @@ export async function interveneBeforeStep(
       const node = nodes.find((n) => n.seq === seq)
       if (node === undefined) continue
       try {
-        if (replacePollution(session, node, node.tokens)) pollution += 1
+        if (replacePollution(session, node, node.tokens)) {
+          pollution += 1
+          platform.observe({ kind: 'pollution-cleanup', ok: true, sessionId: session.id, tokensSaved: node.tokens, detail: 'pre-step' })
+        }
       } catch (error) {
         platform.log.warn('pre-step pollution replace failed seq=%d: %s', seq, messageOf(error))
+        platform.observe({ kind: 'pollution-cleanup', ok: false, sessionId: session.id, detail: 'pre-step' })
       }
     }
   }
@@ -267,14 +312,24 @@ export async function interveneBeforeStep(
       const node = nodes.find((n) => n.seq === seq)
       if (node === undefined) continue
       try {
-        if (pruneNode(session, node, config.toolResultCharLimit, node.tokens)) pruned += 1
+        if (pruneNode(session, node, config.toolResultCharLimit, node.tokens)) {
+          pruned += 1
+          platform.observe({
+            kind: 'prune', ok: true, sessionId: session.id,
+            tokensSaved: node.tokens,
+            charsSaved: node.text.length - config.toolResultCharLimit,
+            detail: 'pre-step',
+          })
+        }
       } catch (error) {
         platform.log.warn('pre-step prune failed seq=%d: %s', seq, messageOf(error))
+        platform.observe({ kind: 'prune', ok: false, sessionId: session.id, detail: 'pre-step' })
       }
     }
   }
   if (pruned > 0 || pollution > 0) {
     platform.log.info('pre-step intervention: pruned=%d pollution=%d tokensBefore=%d', pruned, pollution, tokensBefore)
+    platform.observe({ kind: 'inspect', ok: true, sessionId: session.id, count: pruned + pollution, pressureLevel: level, detail: 'pre-step' })
   }
   return { pruned, pollution, tokensBefore }
 }
@@ -323,14 +378,25 @@ export async function recoverFromOverflow(
     }).compressibleRanges,
     0,
   )
-  if (best === undefined || signal.aborted) return false
+  if (best === undefined || signal.aborted) {
+    if (!signal.aborted) {
+      platform.observe({ kind: 'overflow-recovery', ok: false, sessionId: session.id, detail: 'no compactable range' })
+    }
+    return false
+  }
   try {
     const ctx: CompactionAgentContext = { session, options: { ...agent.options } }
     await platform.compactRegion(best.start, best.end, ctx, signal)
     platform.log.info('overflow recovery compacted %d..%d', best.start, best.end)
+    platform.observe({
+      kind: 'overflow-recovery', ok: true, sessionId: session.id,
+      tokensSaved: best.savingsTokens,
+      detail: `region=${best.start}..${best.end}`,
+    })
     return true
   } catch (error) {
     platform.log.warn('overflow recovery compact failed: %s', messageOf(error))
+    platform.observe({ kind: 'overflow-recovery', ok: false, sessionId: session.id, detail: 'compact failed' })
     return false
   }
 }

@@ -13,6 +13,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
+import { createObservability } from '@dsh-my-plugin/observability'
 
 /** 插件在 cordis.patch.yml 中的行 id（bundle 层由 loader 注入，此处仅文档说明）。 */
 export const name = 'hello-world'
@@ -59,6 +60,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   const greeting = config.greeting ?? 'Hello, {name}!'
   const uppercase = config.uppercase ?? false
   const logger = ctx.logger('hello-world')
+  // 可观测性：记录工具调用（成功/失败），持久化到 $DSH_HOME/observability/events.json。
+  const obs = createObservability({ plugin: '@dsh-my-plugin/hello-world' })
 
   try {
     ctx.tools.register(defineTool({
@@ -86,10 +89,44 @@ export function apply(ctx: Context, config: Config = {}): void {
         // 错误边界：单次调用失败只影响本次结果，绝不向引擎抛异常。
         try {
           const who = (args.name ?? '').trim() || 'world'
+          obs.record({ kind: 'tool-call', ok: true, count: 1, detail: `name=${who}` })
           return { text: composeGreeting(greeting, who, uppercase) }
         } catch (error) {
-          logger.warn('hello_world call failed: %s', error instanceof Error ? error.message : String(error))
-          return { text: `hello_world failed: ${error instanceof Error ? error.message : String(error)}` }
+          const message = error instanceof Error ? error.message : String(error)
+          logger.warn('hello_world call failed: %s', message)
+          obs.record({ kind: 'tool-call', ok: false, count: 1, detail: message })
+          return { text: `hello_world failed: ${message}` }
+        }
+      },
+    }))
+
+    // 查询工具：让模型能看到 hello-world 的使用情况（可观测性展示通道）。
+    ctx.tools.register(defineTool({
+      name: 'hello_stats',
+      description:
+        'Query hello-world plugin usage: total calls, successes, failures. '
+        + 'Use to verify the plugin is being used and working.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            text: { type: 'string', required: true },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: value.text }],
+      },
+      async execute() {
+        try {
+          const stats = obs.stats().find((s) => s.plugin === '@dsh-my-plugin/hello-world')
+          if (stats === undefined) return { text: 'hello-world: no calls recorded yet.' }
+          const t = stats.total
+          return {
+            text: `hello-world usage: ${t.count} calls (${t.success} ok / ${t.failure} fail)`,
+          }
+        } catch (error) {
+          return { text: `hello_stats failed: ${error instanceof Error ? error.message : String(error)}` }
         }
       },
     }))
