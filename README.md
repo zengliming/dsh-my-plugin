@@ -2,7 +2,7 @@
 
 个人 DSH（DeepSeek Harness）插件仓库：集中管理自己定义的全部插件。
 
-采用 **pnpm monorepo** 结构，`packages/*` 每目录一个独立插件包。每个插件都是标准 npm 包，通过 `dsh plugin --profile <profile> add <包名>`（或本地 `link:` 路径）装入 DSH。
+采用 **pnpm monorepo** 结构，`packages/*` 每目录一个独立插件包。每个插件都是标准 npm 包，通过 `dsh plugin --profile <profile> add <包规格>`（本地 `link:` 路径 / npm 包名 / GitHub git URL）装入 DSH，详见下文「安装到 DSH」。
 
 ## 第一设计原则：插件异常绝不影响 DSH 本体
 
@@ -85,11 +85,31 @@ pnpm --filter @dsh-my-plugin/hello-world build          # 构建单个插件
 ## 安装到 DSH
 
 ```bash
-# 开发期：本地链接（指向仓库内包目录）
+# 方式一：本地链接（开发期，指向仓库内包目录）
 dsh plugin --profile web add link:<绝对路径>/packages/hello-world
 
-# 发布后：从 npm
+# 方式二：从 npm（发布后）
 dsh plugin --profile web add @dsh-my-plugin/hello-world
+```
+
+### 方式三：从 GitHub 安装
+
+`dsh plugin add` 的包规格与 npm 一致，支持 git URL 作为来源。前提是安装目标本身是一个结构完整的 npm 插件包（仓库根 `package.json` 就是插件）：
+
+```bash
+# 独立仓库（根即插件包）直接用 git URL 安装：
+dsh plugin --profile web add git+https://github.com/<owner>/<repo>.git
+
+# 指定分支 / tag / commit：
+dsh plugin --profile web add git+https://github.com/<owner>/<repo>.git#main
+dsh plugin --profile web add git+https://github.com/<owner>/<repo>.git#v1.0.0
+```
+
+> ⚠️ **monorepo 注意**：本仓库是 pnpm workspace，插件位于 `packages/*` 子目录；git URL 安装只认仓库根包，而根 `package.json` 是 private（非插件），所以**不能**用 `git+https://…` 直接安装本仓库的子包。GitHub 方式对本仓库要走「先克隆、再 link」：
+
+```bash
+git clone https://github.com/<owner>/dsh-my-plugin.git
+dsh plugin --profile web add link:D:/path/to/dsh-my-plugin/packages/hello-world
 ```
 
 ## 许可
