@@ -7,12 +7,17 @@ describe('resolveConfig', () => {
     expect(c.enabled).toBe(true)
     expect(c.pruneTokens).toBe(160_000)
     expect(c.protectRecentMessages).toBe(8)
+    expect(c.maxOverflowRetries).toBe(2)
   })
 
   it('respects overrides', () => {
     const c = resolveConfig({ pruneTokens: 1, protectRecentMessages: 0 })
     expect(c.pruneTokens).toBe(1)
     expect(c.protectRecentMessages).toBe(0)
+  })
+
+  it('respects maxOverflowRetries override', () => {
+    expect(resolveConfig({ maxOverflowRetries: 0 }).maxOverflowRetries).toBe(0)
   })
 })
 

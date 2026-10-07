@@ -69,7 +69,10 @@ export interface PluginStats {
   readonly total: KindStats
 }
 
-/** 持久化文件的内容结构。 */
+/**
+ * 旧版持久化文件的内容结构（{version, events} 单对象快照）。
+ * 仅用于向后兼容读取：新写入一律为 JSONL（每行一条事件），首次追加时自动迁移。
+ */
 export interface PersistStore {
   readonly version: 1
   /** 已保留的事件（按到达顺序）。 */

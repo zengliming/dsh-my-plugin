@@ -62,6 +62,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   const logger = ctx.logger('hello-world')
   // 可观测性：记录工具调用（成功/失败），持久化到 $DSH_HOME/observability/events.json。
   const obs = createObservability({ plugin: '@dsh-my-plugin/hello-world' })
+  // 可观测性：插件卸载时把积压事件落盘（flush 永不抛错）。
+  ctx.effect(() => () => { obs.flush() })
+  // 可观测性：插件空闲期也周期落盘，把积压事件滞留压到 ≤60s 窗口。定时器经 ctx.effect 回收。
+  const flushTimer = setInterval(() => obs.flush(), 60_000)
+  ctx.effect(() => () => clearInterval(flushTimer))
 
   try {
     ctx.tools.register(defineTool({

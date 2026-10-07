@@ -43,6 +43,11 @@ export interface Config {
   minSavingsTokens?: number
   /** 每个会话两次巡检的最小间隔毫秒，避免高频扫描。默认 15000。 */
   inspectIntervalMs?: number
+  /**
+   * 每个会话在滑动窗口内允许的连续 overflow 重试次数；达到上限后错误直接
+   * 向请求方传播，避免反复压缩仍溢出时形成死循环。默认 2。
+   */
+  maxOverflowRetries?: number
 }
 
 /** Schemastery 配置 schema；同时可被设置页复用为插件配置表单。 */
@@ -60,6 +65,7 @@ export const Config: z<Config> = z.object({
   pollutionCleanup: z.boolean().default(true),
   minSavingsTokens: z.number().min(0).default(20_000),
   inspectIntervalMs: z.number().min(0).default(15_000),
+  maxOverflowRetries: z.number().min(0).default(2),
 })
 
 /** 已解析、带默认值的配置快照（决策层读取此形状）。 */
@@ -77,6 +83,7 @@ export interface ResolvedConfig {
   readonly pollutionCleanup: boolean
   readonly minSavingsTokens: number
   readonly inspectIntervalMs: number
+  readonly maxOverflowRetries: number
 }
 
 /** 补全默认值的纯函数：把可选项配置解析为决策层可直接使用的快照。 */
@@ -95,6 +102,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     pollutionCleanup: config.pollutionCleanup ?? true,
     minSavingsTokens: config.minSavingsTokens ?? 20_000,
     inspectIntervalMs: config.inspectIntervalMs ?? 15_000,
+    maxOverflowRetries: config.maxOverflowRetries ?? 2,
   }
 }
 

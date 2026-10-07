@@ -1,5 +1,7 @@
 # hello-world bundle patch: registers the hello_world tool plugin row.
 # Applied as a profile bundle layer (the `dsh.bundle.patch` manifest field);
+# failOnStartupError: false keeps DSH running if this non-critical plugin
+# fails to start (same pattern as README「第一设计原则」).
 # install with:
 #   dsh plugin --profile web add link:<repo>/packages/hello-world
 # or from npm once published:
@@ -7,3 +9,4 @@
 - insert:
     - id: hello-world
       name: '@dsh-my-plugin/hello-world'
+      failOnStartupError: false
